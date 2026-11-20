@@ -1,0 +1,246 @@
+name: iOS JVM (OpenJDK/mobile)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mobile_repo:
+        description: 'OpenJDK/mobile: upstream oder eigener Fork'
+        type: string
+        default: 'https://github.com/openjdk/mobile.git'
+      mobile_ref:
+        description: 'Branch, Tag oder Commit des Ports'
+        type: string
+        default: 'master'
+      build_simulator:
+        description: 'Zusaetzlich gegen iPhoneSimulator.sdk bauen (noetig fuer die Sonde)'
+        type: boolean
+        default: true
+      run_probe:
+        description: 'Die Sonde auf einem iOS-Simulator ausfuehren'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-jvm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IOS_SDK: /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk
+  SIM_SDK: /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk
+  DEVICE_CONF: ios-aarch64-zero-release
+  SIM_CONF: iossim-aarch64-zero-release
+  IOS_MIN_VERSION: '18.2'
+  SIM_BUNDLE_ID: org.openjdk.mobile.probe
+  SYMBOL_KEEPER_URL: https://raw.githubusercontent.com/openjdk-mobile/ios-tools/main/openjdk-ext/src/hotspot/symbol_keeper.cpp
+  LIBFFI_DEVICE_URL: https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/libffi-ios.zip
+  LIBFFI_SIM_URL: https://github.com/openjdk-mobile/ios-tools/releases/download/libffi-build/libffi-ios-sim.zip
+
+jobs:
+  ios-jvm:
+    name: libjvm.a (arm64, Zero)
+    runs-on: macos-14
+    timeout-minutes: 180
+
+    steps:
+      - name: Install toolchain
+        run: |
+          brew install automake autoconf libtool make libffi
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+      - name: Set up boot JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: '26'
+          distribution: 'temurin'
+
+      - name: Clone OpenJDK/mobile
+        env:
+          MOBILE_REPO: ${{ inputs.mobile_repo }}
+          MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          git clone --depth 1 --single-branch -- "$MOBILE_REPO" mobile
+          cd mobile
+          git fetch --depth 1 origin "$MOBILE_REF"
+          git checkout --force FETCH_HEAD
+          git log -1 --oneline
+          curl -fsSL "$SYMBOL_KEEPER_URL" -o src/hotspot/os/bsd/symbol_keeper.cpp
+          mkdir -p ../support-device ../support-sim
+
+      - name: Unpack iOS libffi
+        run: |
+          curl -fsSL -o libffi-ios.zip "$LIBFFI_DEVICE_URL"
+          unzip -q libffi-ios.zip -d support-device
+          FFI_INC=$(dirname "$(find support-device -name ffi.h | head -1)")
+          echo "FFI_INC_DEVICE=$PWD/$FFI_INC" >> "$GITHUB_ENV"
+          echo "FFI_LIB_DEVICE=$PWD/support-device" >> "$GITHUB_ENV"
+
+      - name: Configure for iPhoneOS
+        working-directory: mobile
+        run: |
+          bash ./configure \
+            --with-conf-name="$DEVICE_CONF" \
+            --disable-warnings-as-errors \
+            --openjdk-target=aarch64-macos-ios \
+            --with-sysroot="$IOS_SDK" \
+            --with-libffi-include="$FFI_INC_DEVICE" \
+            --with-libffi-lib="$FFI_LIB_DEVICE" \
+            --with-cups-include="$(xcrun --sdk macosx --show-sdk-path)/usr/include"
+
+      - name: Build static image for iPhoneOS
+        working-directory: mobile
+        run: make LOG=info CONF="$DEVICE_CONF" static-libs-image
+
+      - name: Unpack simulator libffi
+        if: ${{ inputs.build_simulator }}
+        run: |
+          curl -fsSL -o libffi-ios-sim.zip "$LIBFFI_SIM_URL"
+          unzip -q libffi-ios-sim.zip -d support-sim
+          FFI_INC=$(dirname "$(find support-sim -name ffi.h | head -1)")
+          echo "FFI_INC_SIM=$PWD/$FFI_INC" >> "$GITHUB_ENV"
+          echo "FFI_LIB_SIM=$PWD/support-sim" >> "$GITHUB_ENV"
+
+      - name: Configure for iPhoneSimulator
+        if: ${{ inputs.build_simulator }}
+        working-directory: mobile
+        run: |
+          bash ./configure \
+            --with-conf-name="$SIM_CONF" \
+            --disable-warnings-as-errors \
+            --openjdk-target=aarch64-macos-ios \
+            --with-sysroot="$SIM_SDK" \
+            --with-libffi-include="$FFI_INC_SIM" \
+            --with-libffi-lib="$FFI_LIB_SIM" \
+            --with-extra-cflags="-target arm64-apple-ios-simulator -mios-simulator-version-min=$IOS_MIN_VERSION" \
+            --with-extra-cxxflags="-target arm64-apple-ios-simulator -mios-simulator-version-min=$IOS_MIN_VERSION" \
+            --with-cups-include="$(xcrun --sdk macosx --show-sdk-path)/usr/include"
+
+      - name: Build static image for iPhoneSimulator
+        if: ${{ inputs.build_simulator }}
+        working-directory: mobile
+        run: make LOG=info CONF="$SIM_CONF" static-libs-image
+
+      - name: Report build output
+        working-directory: mobile
+        run: |
+          for conf in "$DEVICE_CONF" "$SIM_CONF"; do
+            d="build/$conf/images/static-libs"
+            if [ -d "$d" ]; then
+              echo "::group::$conf"
+              find "$d" -maxdepth 3 -name '*.a' -exec du -h {} +
+              echo "java.base module: $(du -sh "build/$conf/jdk/modules/java.base" 2>/dev/null || echo missing)"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Upload iPhoneOS build
+        uses: actions/upload-artifact@v7
+        with:
+          name: libjvm-ios-device
+          if-no-files-found: error
+          path: |
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/zero/libjvm.a
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libjava.a
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libjimage.a
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libnet.a
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libnio.a
+            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libzip.a
+            mobile/build/${{ env.DEVICE_CONF }}/jdk/include
+            mobile/build/${{ env.DEVICE_CONF }}/jdk/modules/java.base
+
+      - name: Upload iPhoneSimulator build
+        if: ${{ inputs.build_simulator }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: libjvm-ios-simulator
+          if-no-files-found: error
+          path: |
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/zero/libjvm.a
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libjava.a
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libjimage.a
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libnet.a
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libnio.a
+            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libzip.a
+            mobile/build/${{ env.SIM_CONF }}/jdk/include
+            mobile/build/${{ env.SIM_CONF }}/jdk/modules/java.base
+
+  ios-sim-probe:
+    name: Sonde ausfuehren (iOS-Simulator)
+    if: ${{ inputs.run_probe }}
+    needs: ios-jvm
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Require simulator build
+        env:
+          BUILD_SIMULATOR: ${{ inputs.build_simulator }}
+        run: |
+          if [ "$BUILD_SIMULATOR" != "true" ]; then
+            echo "::error::run_probe setzt build_simulator voraus (Sonde laeuft gegen iPhoneSimulator.sdk)" >&2
+            exit 1
+          fi
+
+      - name: Install toolchain
+        run: brew install coreutils
+
+      - name: Set up boot JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: '26'
+          distribution: 'temurin'
+
+      - name: Checkout probe payload
+        uses: actions/checkout@v6
+
+      - name: Build probe jar
+        run: |
+          mkdir -p out
+          javac --release 17 -d out src/main/java/HelloWorld.java
+          jar --create --file HelloWorld.jar --main-class HelloWorld -C out .
+          ls -l HelloWorld.jar
+
+      - name: Download iPhoneSimulator build
+        uses: actions/download-artifact@v8
+        with:
+          name: libjvm-ios-simulator
+          path: sim-build
+
+      - name: Unpack simulator libffi
+        run: |
+          curl -fsSL -o libffi-ios-sim.zip "$LIBFFI_SIM_URL"
+          unzip -q libffi-ios-sim.zip -d support-sim
+          LIBFFI_A=$(find support-sim -name 'libffi.a' | head -1)
+          test -n "$LIBFFI_A"
+          echo "libffi.a: $LIBFFI_A"
+          echo "LIBFFI_SIM_A=$PWD/$LIBFFI_A" >> "$GITHUB_ENV"
+
+      - name: Run probe on the iOS simulator
+        env:
+          SIM_BUILD: sim-build/mobile/build/${{ env.SIM_CONF }}
+          PROBE_JAR: HelloWorld.jar
+          LAUNCHER_SRC: .github/scripts/probe-launcher.m
+          INFO_PLIST_SRC: .github/scripts/probe-Info.plist
+          OUT_DIR: probe-out
+          IOS_MIN_VERSION: ${{ env.IOS_MIN_VERSION }}
+        run: bash .github/scripts/ios-sim-probe.sh
+
+      - name: Simulator diagnostics
+        if: failure()
+        run: |
+          echo "::group::Runtimes"
+          xcrun simctl list runtimes || true
+          echo "::endgroup::"
+          echo "::group::Geraete"
+          xcrun simctl list devices available || true
+          echo "::endgroup::"
+          echo "::group::Bundle-Inhalt"
+          find probe-out -maxdepth 4 || true
+          echo "::endgroup::"
+          echo "::group::Systemlog"
+          xcrun simctl spawn booted log show --style compact --last 5m \
+            --predicate 'processImagePath CONTAINS "Probe"' || true
+          echo "::endgroup::"
