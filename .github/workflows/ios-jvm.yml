@@ -41,7 +41,7 @@ env:
 jobs:
   ios-jvm:
     name: libjvm.a (arm64, Zero)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 180
 
     steps:
@@ -171,7 +171,7 @@ jobs:
     name: Sonde ausfuehren (iOS-Simulator)
     if: ${{ inputs.run_probe }}
     needs: ios-jvm
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
