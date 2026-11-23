@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SIM_BUILD="${SIM_BUILD:?SIM_BUILD fehlt}"
+SIM_SEARCH_ROOT="${SIM_SEARCH_ROOT:-sim-build}"
 PROBE_JAR="${PROBE_JAR:?PROBE_JAR fehlt}"
 LAUNCHER_SRC="${LAUNCHER_SRC:?LAUNCHER_SRC fehlt}"
 INFO_PLIST_SRC="${INFO_PLIST_SRC:?INFO_PLIST_SRC fehlt}"
@@ -13,24 +13,56 @@ SIM_BUNDLE_ID="${SIM_BUNDLE_ID:-org.openjdk.mobile.probe}"
 SIM_UDID="${SIM_UDID:-}"
 LAUNCH_TIMEOUT="${LAUNCH_TIMEOUT:-300}"
 
-LIB_DIR="$SIM_BUILD/images/static-libs/lib"
-JVM_A="$LIB_DIR/zero/libjvm.a"
-INCLUDE_DIR="$SIM_BUILD/jdk/include"
-MODULES_SRC="$SIM_BUILD/jdk/modules/java.base"
 LIBSIM_A="$OUT_DIR/libsim.a"
 APP="$OUT_DIR/Probe.app"
 
-for f in "$JVM_A" "$LIB_DIR/libjava.a" "$LIB_DIR/libzip.a" "$LIB_DIR/libnet.a" \
-         "$LIB_DIR/libnio.a" "$LIB_DIR/libjimage.a" "$LIBFFI_SIM_A" "$PROBE_JAR" "$LAUNCHER_SRC"; do
+find_one() {
+  find "$SIM_SEARCH_ROOT" -type "$1" -name "$2" 2>/dev/null | head -1 || true
+}
+
+dump_layout() {
+  echo "::group::Artefakt-Inhalt" >&2
+  find "$SIM_SEARCH_ROOT" -maxdepth 6 | sed -n '1,80p' >&2
+  echo "::endgroup::" >&2
+}
+
+if [ ! -d "$SIM_SEARCH_ROOT" ]; then
+  echo "::error::Artefakt-Verzeichnis fehlt: $SIM_SEARCH_ROOT" >&2
+  exit 1
+fi
+
+JVM_A=$(find_one f libjvm.a)
+LIBJAVA_A=$(find_one f libjava.a)
+LIBZIP_A=$(find_one f libzip.a)
+LIBNET_A=$(find_one f libnet.a)
+LIBNIO_A=$(find_one f libnio.a)
+LIBJIMAGE_A=$(find_one f libjimage.a)
+JNI_H=$(find_one f jni.h)
+MODULES_SRC=$(find_one d java.base)
+
+MISSING=""
+for pair in "libjvm.a:$JVM_A" "libjava.a:$LIBJAVA_A" "libzip.a:$LIBZIP_A" \
+            "libnet.a:$LIBNET_A" "libnio.a:$LIBNIO_A" "libjimage.a:$LIBJIMAGE_A" \
+            "jni.h:$JNI_H" "java.base:$MODULES_SRC"; do
+  if [ -z "${pair#*:}" ]; then
+    MISSING="$MISSING ${pair%%:*}"
+  fi
+done
+if [ -n "$MISSING" ]; then
+  echo "::error::im Artefakt '$SIM_SEARCH_ROOT' nicht gefunden:$MISSING" >&2
+  dump_layout
+  exit 1
+fi
+
+INCLUDE_DIR=$(dirname "$JNI_H")
+echo "Artefakt-Wurzeln: libjvm=$JVM_A headers=$INCLUDE_DIR module=$MODULES_SRC"
+
+for f in "$LIBFFI_SIM_A" "$PROBE_JAR" "$LAUNCHER_SRC" "$INFO_PLIST_SRC"; do
   if [ ! -f "$f" ]; then
     echo "::error::fehlende Datei: $f" >&2
     exit 1
   fi
 done
-if [ ! -d "$MODULES_SRC" ]; then
-  echo "::error::explodiertes Modul java.base fehlt: $MODULES_SRC" >&2
-  exit 1
-fi
 command -v jq >/dev/null 2>&1 || { echo "::error::jq nicht installiert" >&2; exit 1; }
 
 SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
@@ -49,8 +81,7 @@ mkdir -p "$APP/lib/modules"
 
 libtool -static -o "$LIBSIM_A" \
   "$JVM_A" "$LIBFFI_SIM_A" \
-  "$LIB_DIR/libjava.a" "$LIB_DIR/libzip.a" "$LIB_DIR/libnet.a" \
-  "$LIB_DIR/libnio.a" "$LIB_DIR/libjimage.a"
+  "$LIBJAVA_A" "$LIBZIP_A" "$LIBNET_A" "$LIBNIO_A" "$LIBJIMAGE_A"
 echo "libsim.a: $(du -h "$LIBSIM_A" | cut -f1)"
 
 if [ -d "$INCLUDE_DIR/ios" ]; then

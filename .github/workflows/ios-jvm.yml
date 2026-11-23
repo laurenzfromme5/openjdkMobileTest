@@ -209,6 +209,15 @@ jobs:
           name: libjvm-ios-simulator
           path: sim-build
 
+      - name: Inspect downloaded layout
+        run: |
+          echo "::group::Struktur"
+          find sim-build -maxdepth 6 | sed -n '1,80p'
+          echo "::endgroup::"
+          echo "::group::Archive"
+          find sim-build -name '*.a' -exec du -h {} +
+          echo "::endgroup::"
+
       - name: Unpack simulator libffi
         run: |
           curl -fsSL -o libffi-ios-sim.zip "$LIBFFI_SIM_URL"
@@ -220,7 +229,7 @@ jobs:
 
       - name: Run probe on the iOS simulator
         env:
-          SIM_BUILD: sim-build/mobile/build/${{ env.SIM_CONF }}
+          SIM_SEARCH_ROOT: sim-build
           PROBE_JAR: HelloWorld.jar
           LAUNCHER_SRC: .github/scripts/probe-launcher.m
           INFO_PLIST_SRC: .github/scripts/probe-Info.plist
