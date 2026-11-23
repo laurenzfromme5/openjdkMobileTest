@@ -99,7 +99,7 @@ xcrun --sdk iphonesimulator clang \
   -mios-simulator-version-min="$MIN_OS" \
   -isysroot "$SDK_PATH" \
   -fobjc-arc -Wall -O1 \
-  -x objective-c "$LAUNCHER_SRC" \
+  "$LAUNCHER_SRC" \
   $INCLUDES \
   "$LIBSIM_A" \
   -framework Foundation -lz -lc++ \
