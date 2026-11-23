@@ -136,20 +136,30 @@ jobs:
             fi
           done
 
+      - name: Stage build outputs for upload
+        working-directory: mobile
+        env:
+          BUILD_SIMULATOR: ${{ inputs.build_simulator }}
+        run: |
+          rm -rf ../stage
+          stage() {
+            mkdir -p "../stage/$2/modules"
+            cp -R "build/$1/images/static-libs" "../stage/$2/static-libs"
+            cp -R "build/$1/jdk/include" "../stage/$2/include"
+            cp -R "build/$1/jdk/modules/java.base" "../stage/$2/modules/java.base"
+          }
+          stage "$DEVICE_CONF" device
+          if [ "$BUILD_SIMULATOR" = "true" ]; then
+            stage "$SIM_CONF" sim
+          fi
+          du -sh ../stage/*
+
       - name: Upload iPhoneOS build
         uses: actions/upload-artifact@v7
         with:
           name: libjvm-ios-device
           if-no-files-found: error
-          path: |
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/zero/libjvm.a
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libjava.a
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libjimage.a
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libnet.a
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libnio.a
-            mobile/build/${{ env.DEVICE_CONF }}/images/static-libs/lib/libzip.a
-            mobile/build/${{ env.DEVICE_CONF }}/jdk/include
-            mobile/build/${{ env.DEVICE_CONF }}/jdk/modules/java.base
+          path: stage/device
 
       - name: Upload iPhoneSimulator build
         if: ${{ inputs.build_simulator }}
@@ -157,15 +167,7 @@ jobs:
         with:
           name: libjvm-ios-simulator
           if-no-files-found: error
-          path: |
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/zero/libjvm.a
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libjava.a
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libjimage.a
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libnet.a
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libnio.a
-            mobile/build/${{ env.SIM_CONF }}/images/static-libs/lib/libzip.a
-            mobile/build/${{ env.SIM_CONF }}/jdk/include
-            mobile/build/${{ env.SIM_CONF }}/jdk/modules/java.base
+          path: stage/sim
 
   ios-sim-probe:
     name: Sonde ausfuehren (iOS-Simulator)
